@@ -2,6 +2,36 @@
 export const pushDanmuJsContent = /* javascript */ `
 // 推送弹幕功能相关
 
+// 从环境变量获取默认推送地址
+function getDefaultPushUrl(config) {
+    const pushUrl = config.originalEnvVars?.DANMU_PUSH_URL || '';
+    return pushUrl.trim();
+}
+
+// 设置默认推送地址
+function setDefaultPushUrl(config) {
+    const defaultPushUrl = getDefaultPushUrl(config);
+    if (defaultPushUrl) {
+        const pushUrlInput = document.getElementById('push-url');
+        if (pushUrlInput && !pushUrlInput.value) {
+            pushUrlInput.value = defaultPushUrl;
+        }
+    }
+}
+
+// 初始化推送弹幕界面
+function initPushDanmuInterface() {
+    const searchKeywordInput = document.getElementById('push-search-keyword');
+    if (searchKeywordInput) {
+        // 添加回车键搜索事件监听
+        searchKeywordInput.addEventListener('keypress', function(event) {
+            if (event.key === 'Enter') {
+                searchAnimeForPush();
+            }
+        });
+    }
+}
+
 // 搜索动漫用于推送
 function searchAnimeForPush() {
     const keyword = document.getElementById('push-search-keyword').value.trim();
@@ -108,13 +138,25 @@ function getBangumiForPush(animeId, pushUrl) {
 // 展示剧集列表用于推送
 function displayEpisodeListForPush(animeTitle, episodes, pushUrl) {
     const container = document.getElementById('push-episode-list');
-    let html = \`<h3>剧集列表</h3><h4 class="text-yellow-gold">\${animeTitle}</h4><div class="episode-list-container">\`;
-
+    let html = \`<h3>剧集列表</h3><h4 class="text-yellow-gold">\${animeTitle}</h4>\`;
+    
+    // 添加跳转到指定集数的功能
+    html += \`
+    <div class="jump-to-episode">
+        <span>跳转到第</span>
+        <input type="number" id="jump-episode-input-push" class="jump-episode-input" placeholder="输入集数" min="1">
+        <span>集</span>
+        <button class="btn btn-primary btn-sm jump-episode-btn" onclick="jumpToEpisodeForPushDanmu()">跳转</button>
+        <span class="jump-episode-total">共\${episodes.length}集</span>
+    </div>\`;
+    
+    html += '<div class="episode-list-container">';
+    
     episodes.forEach(episode => {
         // 生成弹幕URL
         const commentUrl = window.location.origin + buildApiUrl('/api/v2/comment/' + episode.episodeId + '?format=xml');
         html += \`
-            <div class="episode-item">
+            <div class="episode-item" id="episode-item-push-\${episode.episodeNumber}">
                 <div class="episode-item-content">
                     <strong>第\${episode.episodeNumber}集</strong> - \${episode.episodeTitle || '无标题'}
                 </div>
@@ -133,6 +175,31 @@ function displayEpisodeListForPush(animeTitle, episodes, pushUrl) {
     setTimeout(() => {
         container.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 10);
+}
+
+// 跳转到指定集数（推送弹幕版）
+function jumpToEpisodeForPushDanmu() {
+    const episodeInput = document.getElementById('jump-episode-input-push');
+    const episodeNumber = parseInt(episodeInput.value);
+    
+    if (!episodeNumber || episodeNumber <= 0) {
+        customAlert('请输入有效的集数（正整数）');
+        return;
+    }
+    
+    // 查找对应集数的元素
+    const episodeElement = document.getElementById('episode-item-push-' + episodeNumber);
+    if (episodeElement) {
+        // 滚动到指定元素位置
+        episodeElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // 添加高亮效果以便识别
+        episodeElement.style.backgroundColor = '#fff3cd'; // 黄色背景高亮
+        setTimeout(() => {
+            episodeElement.style.backgroundColor = ''; // 恢复原色
+        }, 2000);
+    } else {
+        customAlert('找不到第' + episodeNumber + '集');
+    }
 }
 
 // 推送弹幕

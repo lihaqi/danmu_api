@@ -1,8 +1,8 @@
 import BaseHandler from "./base-handler.js";
 import { log } from "../../utils/log-util.js";
+import { Envs } from "../envs.js";
 import fs from 'fs';
 import path from 'path';
-import yaml from 'js-yaml';
 import { fileURLToPath } from 'url';
 
 // =====================
@@ -17,19 +17,26 @@ export class NodeHandler extends BaseHandler {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = path.dirname(__filename);
 
-    const envPath = path.join(__dirname, '..', '..', '..', '.env');
-    const yamlPath = path.join(__dirname, '..', '..', '..', 'config.yaml');
+    const envPath = path.join(__dirname, '..', '..', '..', 'config', '.env');
 
     const envExists = fs.existsSync(envPath);
-    const yamlExists = fs.existsSync(yamlPath);
 
-    if (!envExists && !yamlExists) {
-      throw new Error('Neither .env nor config.yaml found');
+    if (!envExists) {
+      throw new Error('.env not found');
     }
 
     let updated = false;
 
     try {
+      // 特殊处理 BLOCKED_WORDS：对值添加双引号并对反斜杠进行转义
+      let processedValue = value;
+      if (key === 'BLOCKED_WORDS') {
+        // 如果值不是以双引号开头和结尾，则添加双引号
+        if (!processedValue.startsWith('"') && !processedValue.endsWith('"')) {
+          processedValue = `"${processedValue}"`;
+        }
+      }
+
       // 更新 .env 文件
       if (envExists) {
         const envContent = fs.readFileSync(envPath, 'utf8');
@@ -42,7 +49,7 @@ export class NodeHandler extends BaseHandler {
           if (trimmed && !trimmed.startsWith('#')) {
             const match = trimmed.match(/^([^=]+)=/);
             if (match && match[1].trim() === key) {
-              lines[i] = `${key}=${value}`;
+              lines[i] = `${key}=${processedValue}`;
               keyFound = true;
               break;
             }
@@ -54,58 +61,21 @@ export class NodeHandler extends BaseHandler {
           if (lines[lines.length - 1] !== '') {
             lines.push('');
           }
-          lines.push(`${key}=${value}`);
+          lines.push(`${key}=${processedValue}`);
         }
 
         fs.writeFileSync(envPath, lines.join('\n'), 'utf8');
-        log("info", `[server] Updated ${key} in .env`);
-        updated = true;
-      }
-
-      // 更新 config.yaml 文件
-      if (yamlExists) {
-        const yamlContent = fs.readFileSync(yamlPath, 'utf8');
-        let yamlConfig = yaml.load(yamlContent) || {};
-
-        // 将扁平的环境变量键转换为嵌套对象路径
-        const keys = key.toLowerCase().split('_');
-        let current = yamlConfig;
-
-        // 遍历到倒数第二层
-        for (let i = 0; i < keys.length - 1; i++) {
-          const k = keys[i];
-          if (!current[k] || typeof current[k] !== 'object') {
-            current[k] = {};
-          }
-          current = current[k];
+        // 同步 .env 原始解析结果，使绕过 dotenv 截断读取的变量即时取到刚写入的值
+        if (Envs.rawEnvValues) {
+          Envs.rawEnvValues = Envs.parseRawEnvText(lines.join('\n'));
         }
-
-        // 设置最后一层的值,尝试智能转换类型
-        const lastKey = keys[keys.length - 1];
-        let parsedValue = value;
-
-        // 尝试转换为数字
-        if (!isNaN(value) && value !== '') {
-          parsedValue = Number(value);
-        }
-        // 尝试转换为布尔值
-        else if (value === 'true') {
-          parsedValue = true;
-        } else if (value === 'false') {
-          parsedValue = false;
-        }
-
-        current[lastKey] = parsedValue;
-
-        // 写回文件
-        fs.writeFileSync(yamlPath, yaml.dump(yamlConfig), 'utf8');
-        log("info", `[server] Updated ${key} in config.yaml`);
+        log("info", `[system] [server] Updated ${key} in .env`);
         updated = true;
       }
 
       return updated;
     } catch (error) {
-      log("error", '[server] Error updating configuration:', error.message);
+      log("error", '[system] [server] Error updating configuration:', error.message);
       throw error;
     }
   }
@@ -114,7 +84,9 @@ export class NodeHandler extends BaseHandler {
    * 设置环境变量并重新初始化全局配置
    */
   async setEnv(key, value) {
-    log("info", '[server] Setting environment variable:', key, '=', value);
+    // sensitiveKeys 为按 encrypt 读取的凭据类变量，其值仅在运行期使用，不在日志以明文呈现
+    const isSensitive = Envs.sensitiveKeys.has(key);
+    log("info", '[system] [server] Setting environment variable:', key, '=', isSensitive ? '***' : value);
 
     try {
       // 更新配置文件
@@ -126,7 +98,7 @@ export class NodeHandler extends BaseHandler {
 
       return this.updateLocalEnv(key, value);
     } catch (error) {
-      log("error", '[server] ✗ Failed to set environment variable:', error.message);
+      log("error", '[system] [server] ✗ Failed to set environment variable:', error.message);
     }
   }
 
@@ -145,8 +117,7 @@ export class NodeHandler extends BaseHandler {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = path.dirname(__filename);
 
-    const envPath = path.join(__dirname, '..', '..', '..', '.env');
-    const yamlPath = path.join(__dirname, '..', '..', '..', 'config.yaml');
+    const envPath = path.join(__dirname, '..', '..', '..', 'config', '.env');
 
     let deleted = false;
 
@@ -163,33 +134,12 @@ export class NodeHandler extends BaseHandler {
         });
 
         fs.writeFileSync(envPath, filteredLines.join('\n'), 'utf8');
-        log("info", `[server] Deleted ${key} from .env`);
+        // 同步 .env 原始解析结果，使被删除的变量不残留于原始值中
+        if (Envs.rawEnvValues) {
+          Envs.rawEnvValues = Envs.parseRawEnvText(filteredLines.join('\n'));
+        }
+        log("info", `[system] [server] Deleted ${key} from .env`);
         deleted = true;
-      }
-
-      // 从 config.yaml 文件删除
-      if (fs.existsSync(yamlPath)) {
-        const yamlContent = fs.readFileSync(yamlPath, 'utf8');
-        let yamlConfig = yaml.load(yamlContent) || {};
-
-        const keys = key.toLowerCase().split('_');
-        let current = yamlConfig;
-
-        // 遍历到倒数第二层
-        for (let i = 0; i < keys.length - 1; i++) {
-          const k = keys[i];
-          if (!current[k]) return;
-          current = current[k];
-        }
-
-        // 删除最后一层的键
-        const lastKey = keys[keys.length - 1];
-        if (current && lastKey in current) {
-          delete current[lastKey];
-          fs.writeFileSync(yamlPath, yaml.dump(yamlConfig), 'utf8');
-          log("info", `[server] Deleted ${key} from config.yaml`);
-          deleted = true;
-        }
       }
 
       if (deleted) {
@@ -198,7 +148,7 @@ export class NodeHandler extends BaseHandler {
 
       return false;
     } catch (error) {
-      log("error", '[server] ✗ Failed to delete environment variable:', error.message);
+      log("error", '[system] [server] ✗ Failed to delete environment variable:', error.message);
     }
   }
 }
